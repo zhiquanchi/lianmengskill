@@ -12,6 +12,8 @@ class GrokBackground {
         this.pageReady = false;
         this.lastError = null;
         this.lastActivity = null;
+        this.heartbeatIntervalMs = 20000;
+        this.heartbeatTimer = null;
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.reconnectDelay = 1000;
@@ -38,7 +40,8 @@ class GrokBackground {
             'lastActivity',
         ]);
         
-        if (result.clientId && result.wsUrl) {
+        if (result.wsUrl) {
+            this.lastWsUrl = result.wsUrl;
             setTimeout(() => {
                 this.connect(result.wsUrl).catch((e) =>
                     console.error('Auto-reconnect on startup failed:', e)
@@ -84,11 +87,20 @@ class GrokBackground {
     
     setupAlarms() {
         // Setup heartbeat alarm for WebSocket connection
-        chrome.alarms.create('heartbeat', { periodInMinutes: 1 });
+        chrome.alarms.create('heartbeat', { periodInMinutes: 0.5 });
         
         chrome.alarms.onAlarm.addListener((alarm) => {
             if (alarm.name === 'heartbeat') {
-                this.sendHeartbeat();
+                if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
+                    this.sendHeartbeat();
+                    return;
+                }
+
+                if (this.lastWsUrl) {
+                    this.connect(this.lastWsUrl).catch((error) => {
+                        console.debug('Alarm reconnect skipped:', error?.message || error);
+                    });
+                }
             }
         });
     }
@@ -255,7 +267,7 @@ class GrokBackground {
         this.notifyPopup('connected', { clientId: this.clientId });
         
         // Start heartbeat
-        this.sendHeartbeat();
+        this.startHeartbeat();
     }
     
     onWebSocketMessage(event) {
@@ -360,11 +372,13 @@ class GrokBackground {
             throw new Error('Grok tab not available');
         }
 
+        await this.prepareFreshConversation();
         await this.ensureContentScriptInjected();
 
         const response = await chrome.tabs.sendMessage(this.grokTabId, {
             type: 'sendQuestion',
             question: question,
+            newConversation: true,
         });
 
         if (response && response.success) {
@@ -373,6 +387,35 @@ class GrokBackground {
         }
 
         throw new Error(response?.error || 'Failed to get answer from content script');
+    }
+
+    async prepareFreshConversation() {
+        if (!this.grokTabId) {
+            return;
+        }
+
+        let tab;
+        try {
+            tab = await chrome.tabs.get(this.grokTabId);
+        } catch (_) {
+            return;
+        }
+
+        const freshUrl = this.getFreshConversationUrl(tab.url || this.grokTabUrl || 'https://grok.com/');
+        if (freshUrl && tab.url !== freshUrl) {
+            await chrome.tabs.update(this.grokTabId, { url: freshUrl, active: true });
+            await this.waitForTabComplete(this.grokTabId, 15000);
+            this.grokTabUrl = freshUrl;
+            this.contentScriptReady = false;
+            this.pageReady = false;
+            this.savePersistedState();
+            return;
+        }
+
+        await chrome.tabs.update(this.grokTabId, { active: true });
+        if (tab.windowId) {
+            await chrome.windows.update(tab.windowId, { focused: true });
+        }
     }
     
     async retryWithBackoff(operation, maxRetries, initialDelay) {
@@ -449,6 +492,37 @@ class GrokBackground {
             return null;
         }
     }
+
+    waitForTabComplete(tabId, timeoutMs = 15000) {
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const timer = setTimeout(() => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                chrome.tabs.onUpdated.removeListener(listener);
+                reject(new Error('Timed out waiting for Grok tab to finish loading'));
+            }, timeoutMs);
+
+            const listener = (updatedTabId, changeInfo) => {
+                if (updatedTabId !== tabId || changeInfo.status !== 'complete') {
+                    return;
+                }
+
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                clearTimeout(timer);
+                chrome.tabs.onUpdated.removeListener(listener);
+                resolve();
+            };
+
+            chrome.tabs.onUpdated.addListener(listener);
+        });
+    }
     
     async ensureContentScriptInjected() {
         if (!this.grokTabId) return false;
@@ -504,6 +578,21 @@ class GrokBackground {
             this.sendToBackend({ type: 'ping' });
         }
     }
+
+    startHeartbeat() {
+        this.stopHeartbeat();
+        this.sendHeartbeat();
+        this.heartbeatTimer = setInterval(() => {
+            this.sendHeartbeat();
+        }, this.heartbeatIntervalMs);
+    }
+
+    stopHeartbeat() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    }
     
     onWebSocketClose(event) {
         const wasConnected = this.connected;
@@ -511,6 +600,7 @@ class GrokBackground {
         this.connected = false;
         this.ws = null;
         this.clientId = null;
+        this.stopHeartbeat();
         if (event.code !== 1000) {
             this.recordError(event.reason || `WebSocket closed (${event.code})`);
         }
@@ -562,12 +652,14 @@ class GrokBackground {
     
     handleConnectionError(error) {
         this.connected = false;
+        this.stopHeartbeat();
         this.recordError(error?.message || 'Connection error');
         this.notifyPopup('error', { error: error.message });
     }
     
     disconnect() {
         this.lastWsUrl = null;
+        this.stopHeartbeat();
         if (this.ws) {
             this.ws.close(1000, 'User disconnected');
             this.ws = null;
@@ -724,6 +816,19 @@ class GrokBackground {
         }
 
         return normalized;
+    }
+
+    getFreshConversationUrl(url = '') {
+        try {
+            const parsed = new URL(this.normalizeGrokUrl(url));
+            if (parsed.hostname === 'x.com') {
+                return 'https://x.com/i/grok';
+            }
+
+            return `${parsed.origin}/`;
+        } catch (_) {
+            return 'https://grok.com/';
+        }
     }
 
     recordError(message) {

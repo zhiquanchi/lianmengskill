@@ -9,6 +9,8 @@ class GrokContentScript {
         this.answerObserver = null;
         this.maxWaitTime = 30000; // 30 seconds max wait for response
         this.pollInterval = 500; // Check every 500ms
+        this.newConversationXPath = '/html/body/div[2]/div/div[2]/div/div[1]/div[2]/div[2]';
+        this.inputXPath = '/html/body/div[2]/div/div[3]/div/div/main/div[2]/div/div[2]/div/div[1]/form/div/div/div[2]/div[1]/div/div/div/p';
         
         this.setupMessageListener();
         this.initializeObserver();
@@ -32,7 +34,9 @@ class GrokContentScript {
                     break;
                     
                 case 'sendQuestion':
-                    const answer = await this.sendQuestion(message.question);
+                    const answer = await this.sendQuestion(message.question, {
+                        newConversation: message.newConversation !== false,
+                    });
                     sendResponse({ 
                         success: !!answer, 
                         answer: answer 
@@ -97,8 +101,9 @@ class GrokContentScript {
         const hasInput = this.findInputElement();
         const hasSendButton = this.findSendButton();
         const hasChatContainer = this.findChatContainer();
+        const hasNewConversationButton = this.findNewConversationButton();
         
-        if (hasInput && hasSendButton && hasChatContainer) {
+        if ((hasInput && hasSendButton && hasChatContainer) || hasNewConversationButton) {
             if (!this.isReady) {
                 console.log('Grok page is ready');
                 this.isReady = true;
@@ -134,9 +139,43 @@ class GrokContentScript {
             return [];
         }
     }
+
+    getElementByXPath(xpath, root = document) {
+        try {
+            const result = document.evaluate(
+                xpath,
+                root,
+                null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                null
+            );
+            return result.singleNodeValue;
+        } catch (error) {
+            console.debug(`Invalid XPath skipped: ${xpath}`, error);
+            return null;
+        }
+    }
+
+    getElementLabel(element) {
+        return [
+            element?.textContent,
+            element?.getAttribute?.('aria-label'),
+            element?.getAttribute?.('title'),
+            element?.getAttribute?.('data-testid'),
+        ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase()
+            .trim();
+    }
     
     // DOM element finders - these need to be customized for actual Grok UI
     findInputElement() {
+        const xpathMatch = this.getElementByXPath(this.inputXPath);
+        if (xpathMatch) {
+            return xpathMatch;
+        }
+
         // Try various selectors for the chat input
         const selectors = [
             'textarea[data-testid*="chat"]',
@@ -263,12 +302,12 @@ class GrokContentScript {
         return allMessages.length > 0 ? allMessages[allMessages.length - 1] : null;
     }
     
-    async sendQuestion(question) {
+    async sendQuestion(question, options = {}) {
         if (this.isProcessing) {
             throw new Error('Already processing a question');
         }
-        
-        if (!this.isReady) {
+
+        if (!options.newConversation && !this.isReady) {
             throw new Error('Page not ready. Please wait for Grok to load.');
         }
         
@@ -277,6 +316,15 @@ class GrokContentScript {
         
         try {
             console.log(`Sending question to Grok: ${question.substring(0, 100)}...`);
+
+            if (options.newConversation) {
+                await this.startNewConversation();
+            }
+
+            const chatContainer = this.findChatContainer();
+            const previousLatestMessage = chatContainer
+                ? this.extractMessageText(this.findLatestMessage(chatContainer) || document.createElement('div'))
+                : '';
             
             // Step 1: Find and fill the input
             const inputElement = await this.waitForElement(() => this.findInputElement());
@@ -287,15 +335,15 @@ class GrokContentScript {
             await this.fillInput(inputElement, question);
             
             // Step 2: Find and click send button
-            const sendButton = await this.waitForElement(() => this.findSendButton());
-            if (!sendButton) {
-                throw new Error('Could not find send button');
+            const sendButton = await this.waitForElement(() => this.findSendButton(), 3000);
+            if (sendButton) {
+                await this.clickSendButton(sendButton);
+            } else {
+                await this.pressEnterToSend(inputElement);
             }
             
-            await this.clickSendButton(sendButton);
-            
             // Step 3: Wait for and extract the answer
-            const answer = await this.waitForAnswer();
+            const answer = await this.waitForAnswer(previousLatestMessage);
             
             console.log(`Got answer from Grok: ${answer.substring(0, 100)}...`);
             return answer;
@@ -304,6 +352,74 @@ class GrokContentScript {
             this.isProcessing = false;
             this.currentQuestion = null;
         }
+    }
+
+    async startNewConversation() {
+        const existingInput = this.findInputElement();
+        if (existingInput) {
+            return;
+        }
+
+        const newChatButton = await this.waitForElement(() => this.findNewConversationButton(), 5000);
+        if (!newChatButton) {
+            throw new Error('Could not find new conversation button');
+        }
+
+        await this.clickElement(newChatButton);
+        await this.sleep(1500);
+
+        const inputAfterClick = await this.waitForElement(() => this.findInputElement(), 8000);
+        if (!inputAfterClick) {
+            throw new Error('New conversation opened, but input box was not found');
+        }
+    }
+
+    findNewConversationButton() {
+        const xpathMatch = this.getElementByXPath(this.newConversationXPath);
+        if (xpathMatch) {
+            return xpathMatch;
+        }
+
+        const selectors = [
+            'a[href="/"]',
+            'a[href="/home"]',
+            'button[data-testid*="new"]',
+            'a[data-testid*="new"]',
+            'button[aria-label*="new"]',
+            'a[aria-label*="new"]',
+        ];
+
+        for (const selector of selectors) {
+            const matches = this.querySelectorAllSafe(selector);
+            const match = matches.find((element) => {
+                if (!element || element.offsetParent === null) {
+                    return false;
+                }
+
+                const label = this.getElementLabel(element);
+                return ['new', 'chat', 'conversation', 'thread'].some((keyword) =>
+                    label.includes(keyword)
+                );
+            });
+
+            if (match) {
+                return match;
+            }
+        }
+
+        const candidates = this.querySelectorAllSafe('button, a');
+        return candidates.find((element) => {
+            if (!element || element.offsetParent === null) {
+                return false;
+            }
+
+            const label = this.getElementLabel(element);
+            return (
+                ['new chat', 'new conversation', 'start new chat', 'new thread'].some((keyword) =>
+                    label.includes(keyword)
+                )
+            );
+        }) || null;
     }
     
     async waitForElement(elementFinder, timeout = 10000) {
@@ -323,24 +439,20 @@ class GrokContentScript {
     async fillInput(inputElement, text) {
         // Clear existing value
         if (inputElement.tagName === 'TEXTAREA' || inputElement.tagName === 'INPUT') {
-            inputElement.value = '';
-            inputElement.dispatchEvent(new Event('input', { bubbles: true }));
-            inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+            this.setNativeInputValue(inputElement, '');
+            this.dispatchInputEvents(inputElement);
         } else if (inputElement.isContentEditable) {
-            inputElement.textContent = '';
-            inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+            this.setContentEditableValue(inputElement, '');
         }
         
         await this.sleep(100);
         
         // Set new value
         if (inputElement.tagName === 'TEXTAREA' || inputElement.tagName === 'INPUT') {
-            inputElement.value = text;
-            inputElement.dispatchEvent(new Event('input', { bubbles: true }));
-            inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+            this.setNativeInputValue(inputElement, text);
+            this.dispatchInputEvents(inputElement);
         } else if (inputElement.isContentEditable) {
-            inputElement.textContent = text;
-            inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+            this.setContentEditableValue(inputElement, text);
         }
         
         // Focus the element
@@ -369,8 +481,97 @@ class GrokContentScript {
         
         await this.sleep(500);
     }
+
+    async clickElement(element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await this.sleep(200);
+        element.click?.();
+        element.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+        }));
+        element.dispatchEvent(new MouseEvent('mouseup', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+        }));
+        element.dispatchEvent(new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+        }));
+        await this.sleep(500);
+    }
+
+    async pressEnterToSend(inputElement) {
+        inputElement.focus();
+
+        const keyboardEventInit = {
+            bubbles: true,
+            cancelable: true,
+            key: 'Enter',
+            code: 'Enter',
+            which: 13,
+            keyCode: 13,
+        };
+
+        inputElement.dispatchEvent(new KeyboardEvent('keydown', keyboardEventInit));
+        inputElement.dispatchEvent(new KeyboardEvent('keypress', keyboardEventInit));
+        inputElement.dispatchEvent(new KeyboardEvent('keyup', keyboardEventInit));
+
+        if (inputElement.form) {
+            inputElement.form.requestSubmit?.();
+        }
+
+        await this.sleep(500);
+    }
+
+    setNativeInputValue(element, value) {
+        const prototype = element.tagName === 'TEXTAREA'
+            ? window.HTMLTextAreaElement.prototype
+            : window.HTMLInputElement.prototype;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+        if (descriptor?.set) {
+            descriptor.set.call(element, value);
+        } else {
+            element.value = value;
+        }
+    }
+
+    setContentEditableValue(element, value) {
+        element.focus();
+        if (document.getSelection) {
+            const selection = document.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            range.collapse(false);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+
+        element.textContent = value;
+        this.dispatchInputEvents(element);
+
+        const parentEditable = element.closest('[contenteditable="true"]');
+        if (parentEditable && parentEditable !== element) {
+            parentEditable.textContent = value;
+            this.dispatchInputEvents(parentEditable);
+        }
+    }
+
+    dispatchInputEvents(element) {
+        element.dispatchEvent(new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            data: null,
+            inputType: 'insertText',
+        }));
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+    }
     
-    async waitForAnswer() {
+    async waitForAnswer(previousLatestMessage = '') {
         const chatContainer = this.findChatContainer();
         if (!chatContainer) {
             throw new Error('Could not find chat container');
@@ -388,8 +589,14 @@ class GrokContentScript {
             
             if (latestMessage) {
                 const messageText = this.extractMessageText(latestMessage);
+                const normalizedCurrentQuestion = (this.currentQuestion || '').trim();
                 
-                if (messageText && messageText !== lastMessageText) {
+                if (
+                    messageText &&
+                    messageText !== previousLatestMessage &&
+                    messageText !== normalizedCurrentQuestion &&
+                    messageText !== lastMessageText
+                ) {
                     // New message text detected
                     lastMessageText = messageText;
                     lastMessageCount++;
