@@ -1,0 +1,286 @@
+/* Grok AI Assistant Extension Styles */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #333;
+    background: #f5f5f5;
+    width: 400px;
+    min-height: 500px;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-height: 600px;
+}
+
+/* Header */
+header {
+    background: linear-gradient(135deg, #10a37f 0%, #0d8c6d 100%);
+    color: white;
+    padding: 16px;
+    text-align: center;
+    border-bottom: 1px solid #0d8c6d;
+}
+
+header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.status-label {
+    font-size: 12px;
+    opacity: 0.9;
+}
+
+.status-indicator {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 12px;
+}
+
+.status-indicator.connected {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.status-indicator.disconnected {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+/* Main content */
+main {
+    flex: 1;
+    padding: 16px;
+    overflow-y: auto;
+}
+
+section {
+    background: white;
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+section h2 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: #10a37f;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 8px;
+}
+
+/* Form elements */
+.form-group {
+    margin-bottom: 12px;
+}
+
+.form-group label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    margin-bottom: 4px;
+    color: #555;
+}
+
+.form-group input[type="text"] {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    transition: border-color 0.2s;
+}
+
+.form-group input[type="text"]:focus {
+    outline: none;
+    border-color: #10a37f;
+    box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.1);
+}
+
+.form-group input[type="checkbox"] {
+    margin-right: 6px;
+}
+
+.form-group label {
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+/* Buttons */
+.button-group {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+.btn-primary {
+    background: #10a37f;
+    color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #0d8c6d;
+}
+
+.btn-primary:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+
+.btn-secondary {
+    background: #f0f0f0;
+    color: #555;
+    border: 1px solid #ddd;
+}
+
+.btn-secondary:hover:not(:disabled) {
+    background: #e0e0e0;
+}
+
+.btn-small {
+    padding: 4px 8px;
+    font-size: 11px;
+}
+
+/* Connection status */
+.connection-status {
+    margin-top: 12px;
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    display: none;
+}
+
+.connection-status.success {
+    background: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #c8e6c9;
+    display: block;
+}
+
+.connection-status.error {
+    background: #ffebee;
+    color: #c62828;
+    border: 1px solid #ffcdd2;
+    display: block;
+}
+
+/* Status section */
+.status-info {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.status-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 4px 0;
+    border-bottom: 1px solid #f0f0f0;
+    gap: 12px;
+}
+
+.status-item:last-child {
+    border-bottom: none;
+}
+
+.status-item .label {
+    font-size: 12px;
+    color: #666;
+}
+
+.status-item .value {
+    font-size: 12px;
+    font-weight: 500;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    text-align: right;
+    max-width: 220px;
+    word-break: break-word;
+}
+
+/* Footer */
+footer {
+    background: white;
+    border-top: 1px solid #eee;
+    padding: 12px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.version {
+    font-size: 11px;
+    color: #999;
+}
+
+.controls {
+    display: flex;
+    gap: 8px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #ccc;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #999;
+}
+
+/* Animation for status changes */
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+
+.connecting {
+    animation: pulse 1.5s infinite;
+}

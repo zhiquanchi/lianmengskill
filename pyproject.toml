@@ -1,0 +1,36 @@
+[project]
+name = "lianmengskill"
+version = "0.1.0"
+description = "Browser extension to interact with Grok AI and save conversations to local database"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "sqlalchemy[aiosqlite]>=2.0.0",
+    "pydantic>=2.0.0",
+    "websockets>=12.0",
+    "aiofiles>=23.0.0",
+    "python-multipart>=0.0.6",
+    "sqlalchemy-crud-plus>=1.13.1",
+]
+
+[project.scripts]
+grok-service = "grok_service.main:main"
+
+[tool.black]
+line-length = 88
+target-version = ['py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
