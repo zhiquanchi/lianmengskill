@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grok AI Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body class="side-panel-host">
+    <div class="container">
+        <header>
+            <h1>Grok AI Assistant</h1>
+            <div class="status">
+                <span class="status-label">状态</span>
+                <span id="status" class="status-indicator disconnected">未连接</span>
+            </div>
+        </header>
+
+        <main>
+            <section class="connection-section">
+                <h2>本地后端</h2>
+                <p style="font-size:12px;color:#666;margin-bottom:8px;">
+                    点击工具栏图标可固定本侧栏；在 <code>http://127.0.0.1:8765/</code> 发问题前请先连接 WebSocket。
+                </p>
+                <div class="form-group">
+                    <label for="wsUrl">WebSocket 地址</label>
+                    <input
+                        type="text"
+                        id="wsUrl"
+                        value="ws://127.0.0.1:8765/ws"
+                        placeholder="ws://127.0.0.1:8765/ws">
+                </div>
+                <div class="button-group">
+                    <button id="connectBtn" class="btn btn-primary">连接</button>
+                    <button id="disconnectBtn" class="btn btn-secondary" disabled>断开</button>
+                </div>
+                <div id="connectionStatus" class="connection-status"></div>
+            </section>
+
+            <section class="grok-section">
+                <h2>Grok</h2>
+                <div class="form-group">
+                    <label for="grokUrl">Grok 页面地址</label>
+                    <input
+                        type="text"
+                        id="grokUrl"
+                        value="https://grok.com"
+                        placeholder="https://grok.com">
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="autoOpen" checked>
+                        连接成功后自动打开 Grok 标签页
+                    </label>
+                </div>
+                <button id="openGrokBtn" class="btn btn-secondary">打开 Grok 标签页</button>
+            </section>
+
+            <section class="status-section">
+                <h2>当前状态</h2>
+                <div class="status-info">
+                    <div class="status-item">
+                        <span class="label">WebSocket</span>
+                        <span id="wsStatus" class="value">未连接</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">Grok 标签页</span>
+                        <span id="grokTabStatus" class="value">未打开</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">匹配 URL</span>
+                        <span id="grokUrlStatus" class="value">未检测到</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">页面状态</span>
+                        <span id="pageStatus" class="value">内容脚本未就绪</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">最近活动</span>
+                        <span id="lastActivity" class="value">无</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">已发送次数</span>
+                        <span id="messagesSent" class="value">0</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">最近错误</span>
+                        <span id="lastError" class="value">无</span>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <div class="version">侧栏 v0.1.0</div>
+            <div class="controls">
+                <button id="refreshBtn" class="btn btn-small">刷新</button>
+                <button id="clearStatsBtn" class="btn btn-small">清除统计</button>
+            </div>
+        </footer>
+    </div>
+
+    <script src="panel.js"></script>
+</body>
+</html>

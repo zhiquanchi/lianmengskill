@@ -10,7 +10,12 @@ class GrokContentScript {
         this.maxWaitTime = 30000; // 30 seconds max wait for response
         this.pollInterval = 500; // Check every 500ms
         this.newConversationXPath = '/html/body/div[2]/div/div[2]/div/div[1]/div[2]/div[2]';
-        this.inputXPath = '/html/body/div[2]/div/div[3]/div/div/main/div[2]/div/div[2]/div/div[1]/form/div/div/div[2]/div[1]/div/div/div/p';
+        this.inputContainerXPath =
+            '/html/body/div[2]/div/div[2]/div/div/main/div[2]/div[3]/div[1]/div[2]/div/form/div/div/div[2]/div[1]/div/div/div';
+        this.inputXPath =
+            '/html/body/div[2]/div/div[2]/div/div/main/div[2]/div[3]/div[1]/div[2]/div/form/div/div/div[2]/div[1]/div/div/div/p';
+        this.submitButtonXPath =
+            '/html/body/div[2]/div/div[2]/div/div/main/div[2]/div[3]/div[1]/div[2]/div/form/div/div/div[2]/div[2]/div/div[2]/div[3]/button';
         
         this.setupMessageListener();
         this.initializeObserver();
@@ -171,6 +176,11 @@ class GrokContentScript {
     
     // DOM element finders - these need to be customized for actual Grok UI
     findInputElement() {
+        const containerByXPath = this.getElementByXPath(this.inputContainerXPath);
+        if (containerByXPath) {
+            return containerByXPath;
+        }
+
         const xpathMatch = this.getElementByXPath(this.inputXPath);
         if (xpathMatch) {
             return xpathMatch;
@@ -178,16 +188,9 @@ class GrokContentScript {
 
         // Try various selectors for the chat input
         const selectors = [
-            'textarea[data-testid*="chat"]',
-            'textarea[aria-label*="message"]',
-            'textarea[placeholder*="message"]',
-            'textarea[placeholder*="ask"]',
-            'textarea[placeholder*="prompt"]',
-            'div[contenteditable="true"][role="textbox"]',
-            'div[contenteditable="true"][data-testid*="chat"]',
-            'input[type="text"]',
-            '.chat-input',
-            '#prompt-textarea',
+            'div[contenteditable="true"]',
+            '.tiptap.ProseMirror',
+            '[data-lexical-editor="true"]',
             'textarea'
         ];
         
@@ -202,15 +205,17 @@ class GrokContentScript {
     }
     
     findSendButton() {
+        const xpathMatch = this.getElementByXPath(this.submitButtonXPath);
+        if (xpathMatch) {
+            return xpathMatch;
+        }
+
         // Try various selectors for send/submit button
         const selectors = [
-            'button[data-testid*="send"]',
+            'button[type="submit"]',
+            'button[aria-label*="Submit"]',
             'button[aria-label*="send"]',
-            'button[aria-label*="submit"]',
-            'button:has(svg)',
-            '.send-button',
-            '[data-testid="send-button"]',
-            'button[type="submit"]'
+            '[data-testid*="send"]'
         ];
         
         for (const selector of selectors) {
@@ -331,13 +336,17 @@ class GrokContentScript {
             if (!inputElement) {
                 throw new Error('Could not find input element');
             }
-            
-            await this.fillInput(inputElement, question);
-            
-            // Step 2: Find and click send button
-            const sendButton = await this.waitForElement(() => this.findSendButton(), 3000);
+
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+            await this.sleep(250);
+            await this.clickElement(inputElement);
+
+            // Grok 等页面用 React/ProseMirror：直接改 DOM 往往不会进内部状态，需模拟真实键入后再回车发送
+            await this.typeTextUserLike(inputElement, question);
+            const sendButton = this.findSendButton();
             if (sendButton) {
                 await this.clickSendButton(sendButton);
+                await this.waitForGenerationCycle(sendButton);
             } else {
                 await this.pressEnterToSend(inputElement);
             }
@@ -436,31 +445,99 @@ class GrokContentScript {
         return null;
     }
     
-    async fillInput(inputElement, text) {
-        // Clear existing value
-        if (inputElement.tagName === 'TEXTAREA' || inputElement.tagName === 'INPUT') {
-            this.setNativeInputValue(inputElement, '');
-            this.dispatchInputEvents(inputElement);
-        } else if (inputElement.isContentEditable) {
-            this.setContentEditableValue(inputElement, '');
+    /**
+     * 返回实际可编辑根节点（Grok 常见为外层 contenteditable div，内层为 p）
+     */
+    getEditableRoot(element) {
+        if (!element) {
+            return null;
         }
-        
-        await this.sleep(100);
-        
-        // Set new value
-        if (inputElement.tagName === 'TEXTAREA' || inputElement.tagName === 'INPUT') {
-            this.setNativeInputValue(inputElement, text);
-            this.dispatchInputEvents(inputElement);
-        } else if (inputElement.isContentEditable) {
-            this.setContentEditableValue(inputElement, text);
+        if (element.isContentEditable) {
+            return element;
         }
-        
-        // Focus the element
-        inputElement.focus();
-        inputElement.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ' }));
-        inputElement.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ' }));
-        
-        await this.sleep(300);
+        return element.closest('[contenteditable="true"]') || element;
+    }
+
+    /**
+     * 在光标处用 insertText 写入字符，让框架收到真实 input 流；必要时逐字插入。
+     */
+    async typeTextUserLike(element, text) {
+        const value = text ?? '';
+        const isNative =
+            element.tagName === 'TEXTAREA' || element.tagName === 'INPUT';
+
+        if (isNative) {
+            element.focus();
+            await this.sleep(50);
+            this.setNativeInputValue(element, '');
+            this.dispatchInputEvents(element);
+            await this.sleep(30);
+            let acc = '';
+            for (const ch of value) {
+                acc += ch;
+                this.setNativeInputValue(element, acc);
+                element.dispatchEvent(
+                    new InputEvent('input', {
+                        bubbles: true,
+                        cancelable: false,
+                        inputType: 'insertText',
+                        data: ch,
+                    })
+                );
+                await this.sleep(8);
+            }
+            element.dispatchEvent(new Event('change', { bubbles: true }));
+            await this.sleep(120);
+            return;
+        }
+
+        const root = this.getEditableRoot(element);
+        if (!root) {
+            throw new Error('Could not resolve editable root for typing');
+        }
+
+        root.focus();
+        await this.sleep(80);
+
+        const leaf = element.tagName === 'P' ? element : root;
+        const selection = window.getSelection();
+        const clearRange = document.createRange();
+        clearRange.selectNodeContents(leaf);
+        clearRange.deleteContents();
+
+        const caret = document.createRange();
+        caret.setStart(leaf, 0);
+        caret.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(caret);
+
+        let inserted = false;
+        try {
+            inserted = document.execCommand('insertText', false, value);
+        } catch (_) {
+            inserted = false;
+        }
+
+        if (!inserted && value.length > 0) {
+            for (const ch of value) {
+                try {
+                    document.execCommand('insertText', false, ch);
+                } catch (_) {
+                    /* ignore single char failure */
+                }
+                await this.sleep(12);
+            }
+        }
+
+        leaf.dispatchEvent(
+            new InputEvent('input', {
+                bubbles: true,
+                cancelable: false,
+                inputType: 'insertText',
+                data: value.length ? value : null,
+            })
+        );
+        await this.sleep(150);
     }
     
     async clickSendButton(button) {
@@ -480,6 +557,47 @@ class GrokContentScript {
         }));
         
         await this.sleep(500);
+    }
+
+    isSendButtonBusy(button) {
+        if (!button) {
+            return false;
+        }
+
+        const ariaDisabled = button.getAttribute('aria-disabled') === 'true';
+        const label = this.getElementLabel(button);
+        const hasBusyLabel =
+            label.includes('stop') ||
+            label.includes('generating') ||
+            label.includes('thinking');
+
+        return !!button.disabled || ariaDisabled || hasBusyLabel;
+    }
+
+    async waitForGenerationCycle(button) {
+        // 参考 ChatHub 一类扩展的交互逻辑：先等发送开始，再等发送结束。
+        const startDeadline = Date.now() + 5000;
+        let started = false;
+
+        while (Date.now() < startDeadline) {
+            if (this.isSendButtonBusy(button)) {
+                started = true;
+                break;
+            }
+            await this.sleep(120);
+        }
+
+        if (!started) {
+            return;
+        }
+
+        const finishDeadline = Date.now() + this.maxWaitTime;
+        while (Date.now() < finishDeadline) {
+            if (!this.isSendButtonBusy(button)) {
+                return;
+            }
+            await this.sleep(250);
+        }
     }
 
     async clickElement(element) {
@@ -505,26 +623,38 @@ class GrokContentScript {
     }
 
     async pressEnterToSend(inputElement) {
-        inputElement.focus();
+        const root = this.getEditableRoot(inputElement);
+        const targets = [];
+        if (root && root !== inputElement) {
+            targets.push(root, inputElement);
+        } else {
+            targets.push(inputElement);
+        }
 
         const keyboardEventInit = {
             bubbles: true,
             cancelable: true,
+            composed: true,
             key: 'Enter',
             code: 'Enter',
-            which: 13,
             keyCode: 13,
+            which: 13,
+            charCode: 0,
         };
 
-        inputElement.dispatchEvent(new KeyboardEvent('keydown', keyboardEventInit));
-        inputElement.dispatchEvent(new KeyboardEvent('keypress', keyboardEventInit));
-        inputElement.dispatchEvent(new KeyboardEvent('keyup', keyboardEventInit));
+        for (const el of targets) {
+            el.focus();
+            await this.sleep(40);
+            el.dispatchEvent(new KeyboardEvent('keydown', keyboardEventInit));
+            el.dispatchEvent(new KeyboardEvent('keypress', keyboardEventInit));
+            el.dispatchEvent(new KeyboardEvent('keyup', keyboardEventInit));
+        }
 
         if (inputElement.form) {
             inputElement.form.requestSubmit?.();
         }
 
-        await this.sleep(500);
+        await this.sleep(600);
     }
 
     setNativeInputValue(element, value) {
@@ -536,27 +666,6 @@ class GrokContentScript {
             descriptor.set.call(element, value);
         } else {
             element.value = value;
-        }
-    }
-
-    setContentEditableValue(element, value) {
-        element.focus();
-        if (document.getSelection) {
-            const selection = document.getSelection();
-            const range = document.createRange();
-            range.selectNodeContents(element);
-            range.collapse(false);
-            selection.removeAllRanges();
-            selection.addRange(range);
-        }
-
-        element.textContent = value;
-        this.dispatchInputEvents(element);
-
-        const parentEditable = element.closest('[contenteditable="true"]');
-        if (parentEditable && parentEditable !== element) {
-            parentEditable.textContent = value;
-            this.dispatchInputEvents(parentEditable);
         }
     }
 

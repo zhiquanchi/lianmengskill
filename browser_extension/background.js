@@ -876,3 +876,24 @@ class GrokBackground {
 // Initialize background service (service workers have no `window`; use globalThis for debugging)
 const grokBackground = new GrokBackground();
 globalThis.grokBackground = grokBackground;
+
+/**
+ * 点击扩展图标打开 Side Panel（与 ChatHub 等侧栏类扩展的交互一致）。
+ * 需要 Chrome 114+ / Edge 114+ 且 manifest 中声明 side_panel 与 sidePanel 权限。
+ */
+async function registerSidePanelOpenOnActionClick() {
+    if (!chrome.sidePanel?.setPanelBehavior) {
+        return;
+    }
+    try {
+        await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    } catch (error) {
+        console.warn('Side panel behavior not set:', error?.message || error);
+    }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+    registerSidePanelOpenOnActionClick();
+});
+
+registerSidePanelOpenOnActionClick();

@@ -1,0 +1,22 @@
+/* Side Panel：全宽布局，参考 ChatHub 等侧栏扩展的可用面积 */
+
+body.side-panel-host {
+    width: 100%;
+    min-width: 280px;
+}
+
+body.side-panel-host .container {
+    width: 100%;
+    max-width: none;
+    min-height: 100vh;
+    max-height: none;
+}
+
+body.side-panel-host main {
+    max-width: 520px;
+    margin: 0 auto;
+}
+
+body.side-panel-host .form-group input[type="text"] {
+    font-size: 13px;
+}

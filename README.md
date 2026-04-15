@@ -11,10 +11,10 @@ A browser extension for Chrome/Edge that interacts with xAI's Grok AI (chat.x.ai
 - WebSocket server for real-time communication with browser extension
 
 ### Browser Extension (Manifest V3)
-- **Popup UI**: User interface for managing connections
-- **Content Script**: Injected into chat.x.ai to capture conversations
-- **Background Service**: WebSocket client connecting to local Python service
-- **Fixed Tab Management**: Opens and maintains a tab to chat.x.ai
+- **Side Panel UI**：主界面固定在浏览器侧栏（交互参考 [ChatHub](https://github.com/chathub-dev/chathub)；本仓库未复制其源码，仅借鉴侧栏 + 点击图标打开的模式）
+- **Content Script**：注入 Grok 相关页面并模拟输入与读取回复
+- **Background Service**：WebSocket 客户端连接本地 Python 服务
+- **标签页管理**：打开并保持 Grok 网页标签页
 
 ## Features
 - Send questions from backend to Grok AI via browser extension
@@ -46,7 +46,7 @@ python -m grok_service.main
 1. Open Chrome/Edge extensions page (`chrome://extensions/` or `edge://extensions/`)
 2. Enable "Developer mode"
 3. Click "Load unpacked" and select `browser_extension/` directory
-4. Click the extension icon and configure connection
+4. 点击工具栏扩展图标打开侧栏，配置 WebSocket 并连接
 
 ## Project Structure
 ```
@@ -60,11 +60,12 @@ lianmengskill/
 │   └── crud.py            # CRUD operations using SQLAlchemyCRUDPlus
 ├── browser_extension/     # Chrome/Edge extension
 │   ├── manifest.json      # Extension manifest
-│   ├── popup.html         # Popup interface
-│   ├── popup.js           # Popup logic
+│   ├── sidepanel.html     # Side panel UI (primary)
+│   ├── panel.js           # Shared panel logic (connection + status)
 │   ├── background.js      # Background service worker
-│   ├── content.js         # Content script for chat.x.ai
-│   └── styles.css         # Styling
+│   ├── content.js         # Content script for Grok pages
+│   ├── styles.css         # Styling
+│   └── sidepanel.css      # Side panel layout overrides
 ├── tests/                 # Test suite
 ├── pyproject.toml         # Project dependencies
 └── README.md              # This file

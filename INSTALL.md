@@ -112,7 +112,7 @@ curl http://localhost:8765/
 
 ### 2. Verify Extension Connection
 
-1. Open extension popup
+1. Open the extension side panel (click the toolbar icon)
 2. Status should show "Connected"
 3. "WebSocket" status should show a client ID
 
@@ -139,7 +139,7 @@ The extension will:
 
 ### Extension won't connect
 - Verify backend is running: `curl http://localhost:8765/health`
-- Check WebSocket URL in extension popup
+- Check WebSocket URL in the extension side panel
 - Ensure no firewall blocking port 8765
 
 ### Grok tab not opening
