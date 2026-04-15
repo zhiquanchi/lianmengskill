@@ -204,47 +204,65 @@ class GrokContentScript {
         return null;
     }
     
-    findSendButton() {
+    isLikelySendButton(button) {
+        if (!button || button.tagName !== 'BUTTON' || button.offsetParent === null || button.disabled) {
+            return false;
+        }
+
+        const type = (button.getAttribute('type') || '').toLowerCase();
+        const label = this.getElementLabel(button);
+        const dataTestId = (button.getAttribute('data-testid') || '').toLowerCase();
+        const className = (button.className || '').toLowerCase();
+        const attrs = `${type} ${label} ${dataTestId} ${className}`;
+
+        const denyKeywords = [
+            'refer',
+            'quote',
+            'content',
+            'attach',
+            'upload',
+            'search',
+            'tool',
+            'voice',
+            'mic',
+            'image',
+            'plus',
+            'new chat',
+            'new conversation',
+        ];
+        if (denyKeywords.some((keyword) => attrs.includes(keyword))) {
+            return false;
+        }
+
+        if (type === 'submit') {
+            return true;
+        }
+
+        const allowKeywords = ['send', 'submit', 'ask', 'grok', 'enter'];
+        return allowKeywords.some((keyword) => attrs.includes(keyword));
+    }
+
+    findSendButton(inputElement = null) {
+        const root = this.getEditableRoot(inputElement || this.findInputElement());
+        const form = root?.closest?.('form') || null;
+
+        if (form) {
+            const formButtons = this.querySelectorAllSafe('button', form);
+            const inFormSubmit = formButtons.find((button) => this.isLikelySendButton(button));
+            if (inFormSubmit) {
+                return inFormSubmit;
+            }
+        }
+
+        // XPath 作为兜底，不再作为优先路径，避免误点到“引用内容”等功能按钮。
         const xpathMatch = this.getElementByXPath(this.submitButtonXPath);
-        if (xpathMatch) {
+        if (xpathMatch && this.isLikelySendButton(xpathMatch)) {
             return xpathMatch;
         }
 
-        // Try various selectors for send/submit button
-        const selectors = [
-            'button[type="submit"]',
-            'button[aria-label*="Submit"]',
-            'button[aria-label*="send"]',
-            '[data-testid*="send"]'
-        ];
-        
-        for (const selector of selectors) {
-            const element = this.querySelectorSafe(selector);
-            if (element && element.offsetParent !== null) {
-                return element;
-            }
-        }
-
+        // Global fallback
         const buttons = this.querySelectorAllSafe('button');
-        return buttons.find((button) => {
-            if (!button || button.offsetParent === null || button.disabled) {
-                return false;
-            }
-
-            const label = [
-                button.textContent,
-                button.getAttribute('aria-label'),
-                button.getAttribute('title'),
-            ]
-                .filter(Boolean)
-                .join(' ')
-                .toLowerCase();
-
-            return ['send', 'submit', 'ask', 'grok'].some((keyword) =>
-                label.includes(keyword)
-            );
-        }) || null;
-        
+        return buttons.find((button) => this.isLikelySendButton(button)) || null;
     }
     
     findChatContainer() {
@@ -343,12 +361,21 @@ class GrokContentScript {
 
             // Grok 等页面用 React/ProseMirror：直接改 DOM 往往不会进内部状态，需模拟真实键入后再回车发送
             await this.typeTextUserLike(inputElement, question);
-            const sendButton = this.findSendButton();
-            if (sendButton) {
+            await this.ensureDraftMatchesQuestion(inputElement, question);
+            await this.pressEnterToSend(inputElement);
+            await this.sleep(220);
+
+            // Enter 未触发发送时，再尝试点击明确识别为 submit 的按钮。
+            const sendButton = this.findSendButton(inputElement);
+            const draftAfterEnter = this.normalizeDraftText(
+                this.readCurrentDraft(this.getEditableRoot(inputElement))
+            );
+            const expectedDraft = this.normalizeDraftText(question);
+            const enterTriggered = sendButton ? this.isSendButtonBusy(sendButton) : draftAfterEnter !== expectedDraft;
+
+            if (!enterTriggered && sendButton) {
                 await this.clickSendButton(sendButton);
                 await this.waitForGenerationCycle(sendButton);
-            } else {
-                await this.pressEnterToSend(inputElement);
             }
             
             // Step 3: Wait for and extract the answer
@@ -499,14 +526,13 @@ class GrokContentScript {
         root.focus();
         await this.sleep(80);
 
-        const leaf = element.tagName === 'P' ? element : root;
         const selection = window.getSelection();
         const clearRange = document.createRange();
-        clearRange.selectNodeContents(leaf);
+        clearRange.selectNodeContents(root);
         clearRange.deleteContents();
 
         const caret = document.createRange();
-        caret.setStart(leaf, 0);
+        caret.setStart(root, 0);
         caret.collapse(true);
         selection.removeAllRanges();
         selection.addRange(caret);
@@ -529,7 +555,11 @@ class GrokContentScript {
             }
         }
 
-        leaf.dispatchEvent(
+        if (this.normalizeDraftText(this.readCurrentDraft(root)) !== this.normalizeDraftText(value)) {
+            this.replaceEditableText(root, value);
+        }
+
+        root.dispatchEvent(
             new InputEvent('input', {
                 bubbles: true,
                 cancelable: false,
@@ -537,7 +567,81 @@ class GrokContentScript {
                 data: value.length ? value : null,
             })
         );
+        root.dispatchEvent(new Event('change', { bubbles: true }));
         await this.sleep(150);
+    }
+
+    readCurrentDraft(element) {
+        if (!element) {
+            return '';
+        }
+        const isNative =
+            element.tagName === 'TEXTAREA' || element.tagName === 'INPUT';
+        if (isNative) {
+            return element.value || '';
+        }
+        return (element.innerText || element.textContent || '').replace(/\u200B/g, '');
+    }
+
+    normalizeDraftText(text) {
+        return (text || '')
+            .replace(/\r\n/g, '\n')
+            .replace(/\u00A0/g, ' ')
+            .replace(/\u200B/g, '')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    replaceEditableText(root, value) {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(root);
+        range.deleteContents();
+
+        if (value) {
+            const textNode = document.createTextNode(value);
+            root.appendChild(textNode);
+            range.setStart(textNode, value.length);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        } else {
+            range.setStart(root, 0);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        }
+    }
+
+    async ensureDraftMatchesQuestion(inputElement, expectedQuestion) {
+        const root = this.getEditableRoot(inputElement);
+        if (!root) {
+            throw new Error('Could not resolve editable root for draft validation');
+        }
+        const expected = this.normalizeDraftText(expectedQuestion);
+        let current = this.normalizeDraftText(this.readCurrentDraft(root));
+        if (current === expected) {
+            return;
+        }
+
+        // 首次注入失败时，使用更直接的 fallback 再写入一遍。
+        this.replaceEditableText(root, expectedQuestion || '');
+        root.dispatchEvent(
+            new InputEvent('input', {
+                bubbles: true,
+                cancelable: false,
+                inputType: 'insertText',
+                data: expectedQuestion ? expectedQuestion : null,
+            })
+        );
+        root.dispatchEvent(new Event('change', { bubbles: true }));
+        await this.sleep(120);
+
+        current = this.normalizeDraftText(this.readCurrentDraft(root));
+        if (current !== expected) {
+            throw new Error(`Draft mismatch before send. expected="${expected.slice(0, 80)}", actual="${current.slice(0, 80)}"`);
+        }
     }
     
     async clickSendButton(button) {
@@ -546,16 +650,8 @@ class GrokContentScript {
         
         await this.sleep(200);
         
-        // Click the button
+        // 只点击一次，避免误触发附加动作（例如引用内容按钮）
         button.click();
-        
-        // Also try dispatching events for good measure
-        button.dispatchEvent(new MouseEvent('click', {
-            bubbles: true,
-            cancelable: true,
-            view: window
-        }));
-        
         await this.sleep(500);
     }
 
