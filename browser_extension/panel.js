@@ -24,6 +24,12 @@ class GrokConnectionPanel {
         this.grokUrlInput = document.getElementById('grokUrl');
         this.autoOpenCheckbox = document.getElementById('autoOpen');
         this.openGrokBtn = document.getElementById('openGrokBtn');
+        this.competitorInput = document.getElementById('competitorInput');
+        this.queryDiscountBtn = document.getElementById('queryDiscountBtn');
+        this.discountValueElement = document.getElementById('discountValue');
+        this.discountSourceElement = document.getElementById('discountSource');
+        this.discountSelectorElement = document.getElementById('discountSelector');
+        this.discountUrlElement = document.getElementById('discountUrl');
 
         this.statusElement = document.getElementById('status');
         this.wsStatusElement = document.getElementById('wsStatus');
@@ -40,13 +46,16 @@ class GrokConnectionPanel {
 
     loadSettings() {
         chrome.storage.local.get(
-            ['wsUrl', 'grokUrl', 'autoOpen', 'messageCount'],
+            ['wsUrl', 'grokUrl', 'autoOpen', 'messageCount', 'competitorInput'],
             (result) => {
                 if (result.wsUrl) {
                     this.wsUrlInput.value = result.wsUrl;
                 }
                 if (result.grokUrl) {
                     this.grokUrlInput.value = result.grokUrl;
+                }
+                if (result.competitorInput && this.competitorInput) {
+                    this.competitorInput.value = result.competitorInput;
                 }
                 if (result.autoOpen !== undefined) {
                     this.autoOpenCheckbox.checked = result.autoOpen;
@@ -65,6 +74,7 @@ class GrokConnectionPanel {
             grokUrl: this.grokUrlInput.value,
             autoOpen: this.autoOpenCheckbox.checked,
             messageCount: this.messageCount,
+            competitorInput: this.competitorInput?.value?.trim() || '',
         });
     }
 
@@ -72,12 +82,20 @@ class GrokConnectionPanel {
         this.connectBtn.addEventListener('click', () => this.connectToBackend());
         this.disconnectBtn.addEventListener('click', () => this.disconnectFromBackend());
         this.openGrokBtn.addEventListener('click', () => this.openGrokTab());
+        this.queryDiscountBtn?.addEventListener('click', () => this.querySimplyCodesDiscount());
         this.refreshBtn.addEventListener('click', () => this.refreshStatus());
         this.clearStatsBtn.addEventListener('click', () => this.clearStats());
 
         this.wsUrlInput.addEventListener('change', () => this.saveSettings());
         this.grokUrlInput.addEventListener('change', () => this.saveSettings());
         this.autoOpenCheckbox.addEventListener('change', () => this.saveSettings());
+        this.competitorInput?.addEventListener('change', () => this.saveSettings());
+        this.competitorInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                this.querySimplyCodesDiscount();
+            }
+        });
 
         window.addEventListener('focus', () => this.refreshStatus());
         chrome.runtime.onMessage.addListener((message) => {
@@ -170,6 +188,60 @@ class GrokConnectionPanel {
         } catch (error) {
             this.showConnectionError(`打开标签页出错：${error.message}`);
         }
+    }
+
+    async querySimplyCodesDiscount() {
+        const competitor = this.competitorInput?.value?.trim() || '';
+        if (!competitor) {
+            this.showConnectionError('请输入竞品名称或域名');
+            return;
+        }
+
+        this.saveSettings();
+        this.queryDiscountBtn.disabled = true;
+        this.queryDiscountBtn.textContent = '查询中…';
+        this.resetDiscountResult('查询中…');
+
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: 'querySimplyCodesDiscount',
+                competitor,
+            });
+
+            if (!response?.success) {
+                throw new Error(response?.error || '查询失败');
+            }
+            this.applyDiscountResult(response.data);
+            this.showConnectionSuccess(`已获取 ${competitor} 的折扣额度`);
+        } catch (error) {
+            this.resetDiscountResult('查询失败');
+            this.updateLastError(error.message);
+            this.showConnectionError(`查询折扣失败：${error.message}`);
+        } finally {
+            this.queryDiscountBtn.disabled = false;
+            this.queryDiscountBtn.textContent = '查询折扣额度';
+        }
+    }
+
+    applyDiscountResult(data = {}) {
+        const valueText = data.discountText || '未识别到折扣';
+        const sourceText = data.source || '-';
+        const selectorText = data.selector || '-';
+        const urlText = data.pageUrl || '-';
+
+        this.discountValueElement.textContent = valueText;
+        this.discountValueElement.style.color = valueText === '未识别到折扣' ? '#c62828' : '#10a37f';
+        this.discountSourceElement.textContent = sourceText;
+        this.discountSelectorElement.textContent = selectorText;
+        this.discountUrlElement.textContent = urlText;
+    }
+
+    resetDiscountResult(value = '未查询') {
+        this.discountValueElement.textContent = value;
+        this.discountValueElement.style.color = '#666';
+        this.discountSourceElement.textContent = '-';
+        this.discountSelectorElement.textContent = '-';
+        this.discountUrlElement.textContent = '-';
     }
 
     updateConnectionStatus(connected, clientId = null) {

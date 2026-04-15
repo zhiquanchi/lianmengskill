@@ -57,6 +57,43 @@
                 <button id="openGrokBtn" class="btn btn-secondary">打开 Grok 标签页</button>
             </section>
 
+            <section class="simplycodes-section">
+                <h2>SimplyCodes 折扣抓取</h2>
+                <p style="font-size:12px;color:#666;margin-bottom:8px;">
+                    输入竞品名称或域名（例如 <code>nike</code>、<code>nike.com</code>）。
+                    规则：优先取 <code>Top pick</code>，否则取可识别的最大折扣。
+                </p>
+                <div class="form-group">
+                    <label for="competitorInput">竞品名称 / 域名</label>
+                    <input
+                        type="text"
+                        id="competitorInput"
+                        value="nike.com"
+                        placeholder="nike.com">
+                </div>
+                <div class="button-group">
+                    <button id="queryDiscountBtn" class="btn btn-primary">查询折扣额度</button>
+                </div>
+                <div class="status-info simplycodes-result">
+                    <div class="status-item">
+                        <span class="label">最终折扣</span>
+                        <span id="discountValue" class="value">未查询</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">来源策略</span>
+                        <span id="discountSource" class="value">-</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">命中选择器</span>
+                        <span id="discountSelector" class="value">-</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="label">来源页面</span>
+                        <span id="discountUrl" class="value">-</span>
+                    </div>
+                </div>
+            </section>
+
             <section class="status-section">
                 <h2>当前状态</h2>
                 <div class="status-info">

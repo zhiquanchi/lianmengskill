@@ -8,6 +8,7 @@ class GrokBackground {
         this.clientId = null;
         this.grokTabId = null;
         this.grokTabUrl = null;
+        this.simplyCodesTabId = null;
         this.contentScriptReady = false;
         this.pageReady = false;
         this.lastError = null;
@@ -20,6 +21,40 @@ class GrokBackground {
         
         this.pendingRequests = new Map();
         this.nextRequestId = 1;
+        this.simplyCodesSelectors = {
+            couponCards: [
+                '[data-testid*="coupon"]',
+                '[data-testid*="offer"]',
+                'article',
+                'li[class*="coupon"]',
+                'div[class*="coupon"]',
+                'div[class*="offer"]',
+            ],
+            topPickBadges: [
+                '[class*="top"][class*="pick"]',
+                '[data-testid*="top"]',
+                '[aria-label*="Top pick"]',
+                '[title*="Top pick"]',
+            ],
+            discountValueCandidates: [
+                '[class*="discount"]',
+                '[class*="saving"]',
+                '[class*="value"]',
+                '[class*="amount"]',
+                'h1',
+                'h2',
+                'h3',
+                'strong',
+                'b',
+                'span',
+            ],
+            codeCandidates: [
+                'code',
+                '[class*="code"]',
+                '[data-testid*="code"]',
+                'button',
+            ],
+        };
         
         this.setupMessageListener();
         this.setupAlarms();
@@ -157,6 +192,14 @@ class GrokBackground {
                     sendResponse({ 
                         success: !!answer, 
                         answer: answer 
+                    });
+                    break;
+
+                case 'querySimplyCodesDiscount':
+                    const discountData = await this.querySimplyCodesDiscount(message.competitor);
+                    sendResponse({
+                        success: true,
+                        data: discountData,
                     });
                     break;
                     
@@ -387,6 +430,359 @@ class GrokBackground {
         }
 
         throw new Error(response?.error || 'Failed to get answer from content script');
+    }
+
+    normalizeCompetitorInput(raw = '') {
+        const input = (raw || '').trim().toLowerCase();
+        if (!input) {
+            return '';
+        }
+
+        try {
+            if (/^https?:\/\//i.test(input)) {
+                return new URL(input).hostname.replace(/^www\./, '');
+            }
+        } catch (_) {
+            // fall through
+        }
+
+        return input
+            .replace(/^www\./, '')
+            .replace(/^store\//, '')
+            .replace(/\/.*$/, '')
+            .replace(/\s+/g, '');
+    }
+
+    buildSimplyCodesStoreCandidates(competitor) {
+        const normalized = this.normalizeCompetitorInput(competitor);
+        if (!normalized) {
+            return [];
+        }
+
+        const candidates = new Set();
+        candidates.add(normalized);
+
+        if (!normalized.includes('.')) {
+            candidates.add(`${normalized}.com`);
+        }
+
+        return Array.from(candidates);
+    }
+
+    async querySimplyCodesDiscount(competitor) {
+        const candidates = this.buildSimplyCodesStoreCandidates(competitor);
+        if (candidates.length === 0) {
+            throw new Error('请输入有效的竞品名称或域名');
+        }
+
+        let lastReason = '';
+        for (const storePath of candidates) {
+            const tab = await this.openSimplyCodesStoreTab(storePath);
+            const extraction = await this.extractDiscountFromSimplyCodesPage(tab.id);
+
+            if (extraction.blockedByCloudflare) {
+                throw new Error('SimplyCodes 触发了 Cloudflare 验证，请先在该标签页手动完成验证后再点击“查询折扣额度”');
+            }
+
+            if (extraction.found) {
+                this.setLastActivity();
+                this.lastError = null;
+                this.savePersistedState();
+                return {
+                    competitor: competitor,
+                    discountText: extraction.discountText,
+                    discountValue: extraction.discountValue,
+                    discountUnit: extraction.discountUnit,
+                    source: extraction.source,
+                    selector: extraction.selector,
+                    couponCode: extraction.couponCode || '',
+                    pageUrl: tab.url || `https://simplycodes.com/store/${storePath}`,
+                    storeCandidate: storePath,
+                };
+            }
+
+            lastReason = extraction.reason || `在 ${storePath} 页面未识别到折扣`;
+        }
+
+        throw new Error(lastReason || '未识别到可用折扣信息');
+    }
+
+    async openSimplyCodesStoreTab(storePath) {
+        const targetUrl = `https://simplycodes.com/store/${encodeURIComponent(storePath)}`;
+        const existing = await this.findExistingSimplyCodesTab();
+
+        let tab;
+        if (existing?.id) {
+            tab = await chrome.tabs.update(existing.id, { url: targetUrl, active: true });
+            this.simplyCodesTabId = tab.id;
+            if (tab.windowId) {
+                await chrome.windows.update(tab.windowId, { focused: true });
+            }
+        } else {
+            tab = await chrome.tabs.create({ url: targetUrl, active: true });
+            this.simplyCodesTabId = tab.id;
+        }
+
+        await this.waitForTabReady(tab.id, 15000);
+        const latestTab = await chrome.tabs.get(tab.id);
+        return latestTab;
+    }
+
+    async findExistingSimplyCodesTab() {
+        if (this.simplyCodesTabId) {
+            try {
+                const tab = await chrome.tabs.get(this.simplyCodesTabId);
+                if (this.isSimplyCodesUrl(tab.url)) {
+                    return tab;
+                }
+            } catch (_) {
+                this.simplyCodesTabId = null;
+            }
+        }
+
+        const tabs = await chrome.tabs.query({ url: ['https://simplycodes.com/*'] });
+        return tabs.find((tab) => this.isSimplyCodesUrl(tab.url)) || null;
+    }
+
+    isSimplyCodesUrl(url = '') {
+        return /^https:\/\/simplycodes\.com\//i.test(url || '');
+    }
+
+    async waitForTabReady(tabId, timeoutMs = 15000) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            try {
+                const tab = await chrome.tabs.get(tabId);
+                if (tab?.status === 'complete') {
+                    return true;
+                }
+            } catch (_) {
+                // ignore while waiting
+            }
+            await this.sleep(250);
+        }
+        throw new Error('Timed out waiting for SimplyCodes tab to load');
+    }
+
+    async extractDiscountFromSimplyCodesPage(tabId) {
+        const [{ result }] = await chrome.scripting.executeScript({
+            target: { tabId },
+            args: [this.simplyCodesSelectors],
+            func: (selectors) => {
+                const text = (document.body?.innerText || '').toLowerCase();
+                const title = (document.title || '').toLowerCase();
+                const blockedByCloudflare =
+                    title.includes('请稍候') ||
+                    title.includes('just a moment') ||
+                    text.includes('cloudflare') ||
+                    text.includes('security check') ||
+                    text.includes('正在进行安全验证');
+
+                if (blockedByCloudflare) {
+                    return { blockedByCloudflare: true, found: false, reason: 'Blocked by Cloudflare' };
+                }
+
+                const safeQueryAll = (selector, root = document) => {
+                    try {
+                        return Array.from(root.querySelectorAll(selector));
+                    } catch (_) {
+                        return [];
+                    }
+                };
+
+                const getNodesByXPath = (xpathExpression) => {
+                    try {
+                        const snapshot = document.evaluate(
+                            xpathExpression,
+                            document,
+                            null,
+                            XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                            null
+                        );
+                        const nodes = [];
+                        for (let i = 0; i < snapshot.snapshotLength; i++) {
+                            const node = snapshot.snapshotItem(i);
+                            if (node instanceof HTMLElement) {
+                                nodes.push(node);
+                            }
+                        }
+                        return nodes;
+                    } catch (_) {
+                        return [];
+                    }
+                };
+
+                const discountXPath = '//*[@id="codes-grid"]/div/div/article/header/div/div/h3';
+                const discountXPathNodes = getNodesByXPath(discountXPath);
+
+                const getVerifiedPromosRoot = () => {
+                    try {
+                        const xpathResult = document.evaluate(
+                            '//*[@id="verified-promos-section"]',
+                            document,
+                            null,
+                            XPathResult.FIRST_ORDERED_NODE_TYPE,
+                            null
+                        );
+                        const node = xpathResult.singleNodeValue;
+                        return node instanceof HTMLElement ? node : null;
+                    } catch (_) {
+                        return null;
+                    }
+                };
+
+                const parseDiscount = (rawText = '') => {
+                    const valueText = (rawText || '').replace(/\s+/g, ' ').trim();
+                    if (!valueText) {
+                        return null;
+                    }
+
+                    const percentMatch = valueText.match(/(\d+(?:\.\d+)?)\s*%/);
+                    if (percentMatch) {
+                        const value = Number.parseFloat(percentMatch[1]);
+                        if (Number.isFinite(value)) {
+                            return {
+                                discountText: `${value}%`,
+                                discountValue: value,
+                                discountUnit: '%',
+                                score: 1000 + value,
+                            };
+                        }
+                    }
+
+                    const moneyMatch = valueText.match(/\$?\s*(\d+(?:\.\d+)?)\s*(?:off|discount|savings?)/i)
+                        || valueText.match(/\$(\d+(?:\.\d+)?)/);
+                    if (moneyMatch) {
+                        const value = Number.parseFloat(moneyMatch[1]);
+                        if (Number.isFinite(value)) {
+                            return {
+                                discountText: `$${value}`,
+                                discountValue: value,
+                                discountUnit: '$',
+                                score: value,
+                            };
+                        }
+                    }
+
+                    return null;
+                };
+
+                const couponCards = [];
+                const seen = new Set();
+                // 业务要求：最大折扣候选仅从 verified-promos-section 内部提取。
+                const verifiedPromosRoot = getVerifiedPromosRoot();
+                if (!verifiedPromosRoot) {
+                    return {
+                        found: false,
+                        reason: 'verified-promos-section not found',
+                    };
+                }
+                const searchRoot = verifiedPromosRoot;
+                for (const selector of selectors.couponCards || []) {
+                    for (const element of safeQueryAll(selector, searchRoot)) {
+                        if (!(element instanceof HTMLElement) || seen.has(element)) {
+                            continue;
+                        }
+                        seen.add(element);
+                        couponCards.push({ element, selector });
+                    }
+                }
+
+                const parsedCards = couponCards
+                    .map(({ element, selector }) => {
+                        const cardText = (element.innerText || '').replace(/\s+/g, ' ').trim();
+                        if (!cardText || !/(%|\$|off|discount|save|coupon|code)/i.test(cardText)) {
+                            return null;
+                        }
+
+                        let bestValue = null;
+                        let valueSelector = discountXPath;
+                        const valueCandidates = [];
+                        for (const node of discountXPathNodes) {
+                            if (!element.contains(node)) {
+                                continue;
+                            }
+                            valueCandidates.push({
+                                selector: discountXPath,
+                                text: (node.textContent || '').trim(),
+                            });
+                        }
+
+                        // 业务要求：折扣值必须来自指定 XPath。
+                        if (valueCandidates.length === 0) {
+                            return null;
+                        }
+
+                        for (const candidate of valueCandidates) {
+                            const parsed = parseDiscount(candidate.text);
+                            if (!parsed) {
+                                continue;
+                            }
+                            if (!bestValue || parsed.score > bestValue.score) {
+                                bestValue = parsed;
+                                valueSelector = candidate.selector;
+                            }
+                        }
+
+                        if (!bestValue) {
+                            return null;
+                        }
+
+                        let topPickSelector = '';
+                        for (const badgeSelector of selectors.topPickBadges || []) {
+                            if (safeQueryAll(badgeSelector, element).length > 0) {
+                                topPickSelector = badgeSelector;
+                                break;
+                            }
+                        }
+                        const textTopPick = /top\s*pick/i.test(cardText);
+
+                        let couponCode = '';
+                        for (const codeSelector of selectors.codeCandidates || []) {
+                            const codeNode = safeQueryAll(codeSelector, element).find((node) =>
+                                /^[A-Z0-9][A-Z0-9_-]{3,}$/i.test((node.textContent || '').trim())
+                            );
+                            if (codeNode) {
+                                couponCode = (codeNode.textContent || '').trim();
+                                break;
+                            }
+                        }
+
+                        return {
+                            selector,
+                            valueSelector,
+                            topPickSelector: topPickSelector || (textTopPick ? 'text:top pick' : ''),
+                            couponCode,
+                            ...bestValue,
+                        };
+                    })
+                    .filter(Boolean);
+
+                if (parsedCards.length === 0) {
+                    return {
+                        found: false,
+                        reason: 'No discount parsed from xpath //*[@id="codes-grid"]/div/div/article/header/div/div/h3 within #verified-promos-section',
+                    };
+                }
+
+                const topPickCards = parsedCards.filter((item) => item.topPickSelector);
+                const source = topPickCards.length > 0 ? 'Top pick' : 'Max discount';
+                const chosen = (topPickCards.length > 0 ? topPickCards : parsedCards)
+                    .sort((a, b) => b.score - a.score)[0];
+
+                return {
+                    found: true,
+                    discountText: chosen.discountText,
+                    discountValue: chosen.discountValue,
+                    discountUnit: chosen.discountUnit,
+                    couponCode: chosen.couponCode,
+                    source,
+                    selector: `card:${chosen.selector}; value:${chosen.valueSelector}; topPick:${chosen.topPickSelector || 'none'}`,
+                };
+            },
+        });
+
+        return result || { found: false, reason: 'No result from extraction script' };
     }
 
     async prepareFreshConversation() {

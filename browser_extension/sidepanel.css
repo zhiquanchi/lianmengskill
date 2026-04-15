@@ -20,3 +20,7 @@ body.side-panel-host main {
 body.side-panel-host .form-group input[type="text"] {
     font-size: 13px;
 }
+
+body.side-panel-host .simplycodes-result {
+    margin-top: 10px;
+}

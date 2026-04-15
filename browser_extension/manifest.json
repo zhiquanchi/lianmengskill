@@ -16,6 +16,7 @@
     "https://grok.x.com/*",
     "https://chat.x.ai/*",
     "https://x.com/i/grok*",
+    "https://simplycodes.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
     "ws://127.0.0.1/*",
