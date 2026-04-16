@@ -1,4 +1,5 @@
 // Background service worker for Grok AI Assistant extension
+import { GrokTabManager } from './grok_tab_manager.js';
 import { extractSimplyCodesDiscountFromTab } from './simplycodes_extractor.js';
 
 class GrokBackground {
@@ -22,6 +23,7 @@ class GrokBackground {
         
         this.pendingRequests = new Map();
         this.nextRequestId = 1;
+        this.grokTabManager = new GrokTabManager(this);
         this.setupMessageListener();
         this.setupAlarms();
         
@@ -535,32 +537,7 @@ class GrokBackground {
     }
 
     async prepareFreshConversation() {
-        if (!this.grokTabId) {
-            return;
-        }
-
-        let tab;
-        try {
-            tab = await chrome.tabs.get(this.grokTabId);
-        } catch (_) {
-            return;
-        }
-
-        const freshUrl = this.getFreshConversationUrl(tab.url || this.grokTabUrl || 'https://grok.com/');
-        if (freshUrl && tab.url !== freshUrl) {
-            await chrome.tabs.update(this.grokTabId, { url: freshUrl, active: true });
-            await this.waitForTabComplete(this.grokTabId, 15000);
-            this.grokTabUrl = freshUrl;
-            this.contentScriptReady = false;
-            this.pageReady = false;
-            this.savePersistedState();
-            return;
-        }
-
-        await chrome.tabs.update(this.grokTabId, { active: true });
-        if (tab.windowId) {
-            await chrome.windows.update(tab.windowId, { focused: true });
-        }
+        return this.grokTabManager.prepareFreshConversation();
     }
     
     async retryWithBackoff(operation, maxRetries, initialDelay) {
@@ -589,115 +566,15 @@ class GrokBackground {
     }
     
     async openGrokTab(grokUrl = 'https://grok.com') {
-        try {
-            const normalizedUrl = this.normalizeGrokUrl(grokUrl);
-            const existingTab = await this.findExistingGrokTab();
-            if (existingTab?.id) {
-                this.grokTabId = existingTab.id;
-                this.grokTabUrl = existingTab.url || normalizedUrl;
-                this.pageReady = false;
-                this.contentScriptReady = false;
-                await chrome.tabs.update(existingTab.id, { active: true, url: existingTab.url || normalizedUrl });
-                await chrome.windows.update(existingTab.windowId, { focused: true });
-                await this.ensureContentScriptInjected();
-                this.setLastActivity();
-                this.savePersistedState();
-                return existingTab.id;
-            }
-            
-            // Open new tab
-            const tab = await chrome.tabs.create({
-                url: normalizedUrl,
-                active: true
-            });
-            
-            this.grokTabId = tab.id;
-            this.grokTabUrl = tab.url || normalizedUrl;
-            this.pageReady = false;
-            this.contentScriptReady = false;
-            this.lastError = null;
-            this.setLastActivity();
-            this.savePersistedState();
-            
-            console.log(`Opened Grok tab with ID: ${this.grokTabId}`);
-            
-            // Wait for tab to load
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            await this.ensureContentScriptInjected();
-            
-            return this.grokTabId;
-            
-        } catch (error) {
-            console.error('Error opening Grok tab:', error);
-            this.grokTabId = null;
-            this.grokTabUrl = null;
-            this.contentScriptReady = false;
-            this.pageReady = false;
-            this.recordError(error?.message || 'Failed to open Grok tab');
-            return null;
-        }
+        return this.grokTabManager.openGrokTab(grokUrl);
     }
 
     waitForTabComplete(tabId, timeoutMs = 15000) {
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            const timer = setTimeout(() => {
-                if (settled) {
-                    return;
-                }
-                settled = true;
-                chrome.tabs.onUpdated.removeListener(listener);
-                reject(new Error('Timed out waiting for Grok tab to finish loading'));
-            }, timeoutMs);
-
-            const listener = (updatedTabId, changeInfo) => {
-                if (updatedTabId !== tabId || changeInfo.status !== 'complete') {
-                    return;
-                }
-
-                if (settled) {
-                    return;
-                }
-
-                settled = true;
-                clearTimeout(timer);
-                chrome.tabs.onUpdated.removeListener(listener);
-                resolve();
-            };
-
-            chrome.tabs.onUpdated.addListener(listener);
-        });
+        return this.grokTabManager.waitForTabComplete(tabId, timeoutMs);
     }
     
     async ensureContentScriptInjected() {
-        if (!this.grokTabId) return false;
-        
-        try {
-            // Check if content script is already injected
-            const response = await chrome.tabs.sendMessage(this.grokTabId, { type: 'ping' });
-            this.contentScriptReady = !!response?.success;
-            this.pageReady = !!response?.ready;
-            this.lastError = null;
-            this.savePersistedState();
-            return true;
-        } catch (error) {
-            // Content script not ready, try to execute it
-            try {
-                await chrome.scripting.executeScript({
-                    target: { tabId: this.grokTabId },
-                    files: ['content.js']
-                });
-                console.log('Content script injected');
-                this.contentScriptReady = true;
-                this.lastError = null;
-                this.savePersistedState();
-                return true;
-            } catch (injectError) {
-                console.error('Failed to inject content script:', injectError);
-                this.recordError(injectError?.message || 'Failed to inject content script');
-                return false;
-            }
-        }
+        return this.grokTabManager.ensureContentScriptInjected();
     }
     
     sendToBackend(data) {
@@ -885,95 +762,23 @@ class GrokBackground {
     }
 
     async refreshTabState() {
-        const existingTab = await this.findExistingGrokTab();
-        if (!existingTab?.id) {
-            this.grokTabId = null;
-            this.grokTabUrl = null;
-            this.contentScriptReady = false;
-            this.pageReady = false;
-            this.savePersistedState();
-            return {
-                grokTabId: null,
-                grokTabUrl: null,
-                grokTabOpen: false,
-                contentScriptReady: false,
-                pageReady: false,
-            };
-        }
-
-        this.grokTabId = existingTab.id;
-        this.grokTabUrl = existingTab.url || null;
-
-        try {
-            const response = await chrome.tabs.sendMessage(existingTab.id, { type: 'getStatus' });
-            this.contentScriptReady = !!response;
-            this.pageReady = !!response?.ready;
-            this.lastError = null;
-        } catch (error) {
-            this.contentScriptReady = false;
-            this.pageReady = false;
-        }
-
-        this.savePersistedState();
-
-        return {
-            grokTabId: this.grokTabId,
-            grokTabUrl: this.grokTabUrl,
-            grokTabOpen: true,
-            contentScriptReady: this.contentScriptReady,
-            pageReady: this.pageReady,
-        };
+        return this.grokTabManager.refreshTabState();
     }
 
     async findExistingGrokTab() {
-        if (this.grokTabId) {
-            try {
-                const tab = await chrome.tabs.get(this.grokTabId);
-                if (this.isSupportedGrokUrl(tab.url)) {
-                    return tab;
-                }
-            } catch (_) {
-                this.grokTabId = null;
-            }
-        }
-
-        const tabs = await chrome.tabs.query({});
-        return tabs.find((tab) => this.isSupportedGrokUrl(tab.url)) || null;
+        return this.grokTabManager.findExistingGrokTab();
     }
 
     isSupportedGrokUrl(url = '') {
-        return [
-            'https://grok.com/',
-            'https://grok.x.com/',
-            'https://chat.x.ai/',
-            'https://x.com/i/grok',
-        ].some((prefix) => url.startsWith(prefix));
+        return this.grokTabManager.isSupportedGrokUrl(url);
     }
 
     normalizeGrokUrl(url = '') {
-        const normalized = (url || '').trim();
-        if (!normalized) {
-            return 'https://grok.com/';
-        }
-
-        if (!/^https?:\/\//i.test(normalized)) {
-            return `https://${normalized}`;
-        }
-
-        return normalized;
+        return this.grokTabManager.normalizeGrokUrl(url);
     }
 
     getFreshConversationUrl(url = '') {
-        try {
-            const parsed = new URL(this.normalizeGrokUrl(url));
-            if (parsed.hostname === 'x.com') {
-                return 'https://x.com/i/grok';
-            }
-
-            return `${parsed.origin}/`;
-        } catch (_) {
-            return 'https://grok.com/';
-        }
+        return this.grokTabManager.getFreshConversationUrl(url);
     }
 
     recordError(message) {
