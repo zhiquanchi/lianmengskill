@@ -1,6 +1,8 @@
 // Background service worker for Grok AI Assistant extension
 import { GrokTabManager } from './grok_tab_manager.js';
 import { extractSimplyCodesDiscountFromTab } from './simplycodes_extractor.js';
+import { extractCashbackMonitorDiv9FromTab } from './cashbackmonitor_extractor.js';
+import { WsConnectionManager } from './ws_connection_manager.js';
 
 class GrokBackground {
     constructor() {
@@ -11,6 +13,7 @@ class GrokBackground {
         this.grokTabId = null;
         this.grokTabUrl = null;
         this.simplyCodesTabId = null;
+        this.cashbackMonitorTabId = null;
         this.contentScriptReady = false;
         this.pageReady = false;
         this.lastError = null;
@@ -24,6 +27,7 @@ class GrokBackground {
         this.pendingRequests = new Map();
         this.nextRequestId = 1;
         this.grokTabManager = new GrokTabManager(this);
+        this.wsConnectionManager = new WsConnectionManager(this);
         this.setupMessageListener();
         this.setupAlarms();
         
@@ -170,6 +174,14 @@ class GrokBackground {
                         data: discountData,
                     });
                     break;
+
+                case 'queryCashbackMonitorDiv9':
+                    const cashbackData = await this.queryCashbackMonitorDiv9(message.store);
+                    sendResponse({
+                        success: true,
+                        data: cashbackData,
+                    });
+                    break;
                     
                 default:
                     sendResponse({ 
@@ -192,130 +204,19 @@ class GrokBackground {
      * Previously, connect() returned before onopen, so popup always saw success: false.
      */
     async connect(wsUrl) {
-        if (this.connected && this.ws) {
-            console.log('Already connected, reconnecting...');
-            this.disconnect();
-        }
-
-        this.lastWsUrl = wsUrl;
-
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            const finish = (fn) => {
-                if (settled) return;
-                settled = true;
-                fn();
-            };
-
-            const timeoutId = setTimeout(() => {
-                finish(() => {
-                    try {
-                        this.ws?.close();
-                    } catch (_) {
-                        /* ignore */
-                    }
-                    this.ws = null;
-                    this.connected = false;
-                    reject(new Error('Connection timeout (10s). Is the backend running on ws://127.0.0.1:8765/ws ?'));
-                });
-            }, 10000);
-
-            let socket;
-            try {
-                socket = new WebSocket(wsUrl);
-                this.ws = socket;
-            } catch (error) {
-                clearTimeout(timeoutId);
-                finish(() => reject(error));
-                return;
-            }
-
-            socket.onopen = () => {
-                clearTimeout(timeoutId);
-                this.onWebSocketOpen();
-                finish(() => resolve());
-            };
-
-            socket.onmessage = (event) => this.onWebSocketMessage(event);
-
-            socket.onclose = (event) => {
-                clearTimeout(timeoutId);
-                if (!settled) {
-                    finish(() =>
-                        reject(
-                            new Error(
-                                event.reason ||
-                                    `Connection closed before open (code ${event.code})`
-                            )
-                        )
-                    );
-                }
-                this.onWebSocketClose(event);
-            };
-
-            socket.onerror = () => {
-                clearTimeout(timeoutId);
-                if (!settled) {
-                    finish(() =>
-                        reject(new Error('WebSocket error (check URL and host permission for localhost)'))
-                    );
-                }
-                this.handleConnectionError(new Error('WebSocket error'));
-            };
-        });
+        return this.wsConnectionManager.connect(wsUrl);
     }
     
     onWebSocketOpen() {
-        console.log('WebSocket connection established');
-        this.connected = true;
-        this.reconnectAttempts = 0;
-        this.reconnectDelay = 1000;
-        this.lastError = null;
-        this.setLastActivity();
-        this.savePersistedState();
-        
-        // Notify popup
-        this.notifyPopup('connected', { clientId: this.clientId });
-        
-        // Start heartbeat
-        this.startHeartbeat();
+        return this.wsConnectionManager.onWebSocketOpen();
     }
     
     onWebSocketMessage(event) {
-        try {
-            const data = JSON.parse(event.data);
-            this.handleWebSocketMessage(data);
-        } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-        }
+        return this.wsConnectionManager.onWebSocketMessage(event);
     }
     
     handleWebSocketMessage(data) {
-        const messageType = data.type;
-        
-        switch (messageType) {
-            case 'connected':
-                // Server assigned client ID
-                this.clientId = data.client_id || data.clientId;
-                console.log(`Connected with client ID: ${this.clientId}`);
-                this.lastError = null;
-                this.setLastActivity();
-                this.savePersistedState();
-                break;
-                
-            case 'question':
-                // Question from backend to forward to Grok
-                this.handleQuestionFromBackend(data);
-                break;
-                
-            case 'pong':
-                // Heartbeat response
-                console.debug('Heartbeat response received');
-                break;
-                
-            default:
-                console.log('Unknown message type from server:', messageType);
-        }
+        return this.wsConnectionManager.handleWebSocketMessage(data);
     }
     
     async handleQuestionFromBackend(data) {
@@ -536,6 +437,125 @@ class GrokBackground {
         return extractSimplyCodesDiscountFromTab(tabId);
     }
 
+    normalizeCashbackMonitorStoreInput(raw = '') {
+        const input = (raw || '').trim();
+        if (!input) {
+            return '';
+        }
+
+        try {
+            if (/^https?:\/\//i.test(input)) {
+                const url = new URL(input);
+                const path = url.pathname || '';
+                const match = path.match(/\/cashback-store\/([^/]+)\/?/i);
+                if (match?.[1]) {
+                    return decodeURIComponent(match[1]).trim();
+                }
+            }
+        } catch (_) {
+            // fall through
+        }
+
+        return input
+            .toLowerCase()
+            .replace(/^www\./, '')
+            .replace(/\.com$/, '')
+            .replace(/\/.*$/, '')
+            .replace(/\s+/g, '');
+    }
+
+    async queryCashbackMonitorDiv9(store) {
+        const normalized = this.normalizeCashbackMonitorStoreInput(store);
+        if (!normalized) {
+            throw new Error('请输入有效的店铺名或 CashbackMonitor 链接');
+        }
+
+        const tab = await this.openCashbackMonitorStoreTab(normalized);
+        const extraction = await this.extractDiv9FromCashbackMonitorPage(tab.id);
+
+        if (!extraction?.found) {
+            throw new Error(extraction?.reason || '未找到 /html/body/div[9] 节点');
+        }
+
+        this.setLastActivity();
+        this.lastError = null;
+        this.savePersistedState();
+
+        return {
+            store: normalized,
+            pageUrl: tab.url || `https://www.cashbackmonitor.com/cashback-store/${normalized}/`,
+            xpath: extraction.xpath,
+            text: extraction.text,
+            html: extraction.html,
+            meta: {
+                tagName: extraction.tagName,
+                id: extraction.id,
+                className: extraction.className,
+            },
+        };
+    }
+
+    async openCashbackMonitorStoreTab(storeSlug) {
+        const targetUrl = `https://www.cashbackmonitor.com/cashback-store/${encodeURIComponent(storeSlug)}/`;
+        const existing = await this.findExistingCashbackMonitorTab();
+
+        let tab;
+        if (existing?.id) {
+            tab = await chrome.tabs.update(existing.id, { url: targetUrl, active: true });
+            this.cashbackMonitorTabId = tab.id;
+            if (tab.windowId) {
+                await chrome.windows.update(tab.windowId, { focused: true });
+            }
+        } else {
+            tab = await chrome.tabs.create({ url: targetUrl, active: true });
+            this.cashbackMonitorTabId = tab.id;
+        }
+
+        await this.waitForTabReadyGeneric(tab.id, 20000, 'CashbackMonitor');
+        const latestTab = await chrome.tabs.get(tab.id);
+        return latestTab;
+    }
+
+    async findExistingCashbackMonitorTab() {
+        if (this.cashbackMonitorTabId) {
+            try {
+                const tab = await chrome.tabs.get(this.cashbackMonitorTabId);
+                if (this.isCashbackMonitorUrl(tab.url)) {
+                    return tab;
+                }
+            } catch (_) {
+                this.cashbackMonitorTabId = null;
+            }
+        }
+
+        const tabs = await chrome.tabs.query({ url: ['https://www.cashbackmonitor.com/*'] });
+        return tabs.find((tab) => this.isCashbackMonitorUrl(tab.url)) || null;
+    }
+
+    isCashbackMonitorUrl(url = '') {
+        return /^https:\/\/www\.cashbackmonitor\.com\//i.test(url || '');
+    }
+
+    async extractDiv9FromCashbackMonitorPage(tabId) {
+        return extractCashbackMonitorDiv9FromTab(tabId);
+    }
+
+    async waitForTabReadyGeneric(tabId, timeoutMs = 15000, label = 'page') {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            try {
+                const tab = await chrome.tabs.get(tabId);
+                if (tab?.status === 'complete') {
+                    return true;
+                }
+            } catch (_) {
+                // ignore while waiting
+            }
+            await this.sleep(250);
+        }
+        throw new Error(`Timed out waiting for ${label} tab to load`);
+    }
+
     async prepareFreshConversation() {
         return this.grokTabManager.prepareFreshConversation();
     }
@@ -578,124 +598,35 @@ class GrokBackground {
     }
     
     sendToBackend(data) {
-        if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
-            try {
-                this.ws.send(JSON.stringify(data));
-                this.setLastActivity();
-                return true;
-            } catch (error) {
-                console.error('Error sending to backend:', error);
-                this.recordError(error?.message || 'Error sending to backend');
-                return false;
-            }
-        } else {
-            console.error('WebSocket not connected, cannot send message');
-            this.recordError('WebSocket not connected');
-            return false;
-        }
+        return this.wsConnectionManager.sendToBackend(data);
     }
     
     sendHeartbeat() {
-        if (this.connected && this.ws?.readyState === WebSocket.OPEN) {
-            this.sendToBackend({ type: 'ping' });
-        }
+        return this.wsConnectionManager.sendHeartbeat();
     }
 
     startHeartbeat() {
-        this.stopHeartbeat();
-        this.sendHeartbeat();
-        this.heartbeatTimer = setInterval(() => {
-            this.sendHeartbeat();
-        }, this.heartbeatIntervalMs);
+        return this.wsConnectionManager.startHeartbeat();
     }
 
     stopHeartbeat() {
-        if (this.heartbeatTimer) {
-            clearInterval(this.heartbeatTimer);
-            this.heartbeatTimer = null;
-        }
+        return this.wsConnectionManager.stopHeartbeat();
     }
     
     onWebSocketClose(event) {
-        const wasConnected = this.connected;
-        console.log(`WebSocket connection closed: ${event.code} ${event.reason}`);
-        this.connected = false;
-        this.ws = null;
-        this.clientId = null;
-        this.stopHeartbeat();
-        if (event.code !== 1000) {
-            this.recordError(event.reason || `WebSocket closed (${event.code})`);
-        }
-        this.savePersistedState();
-
-        // Notify popup
-        this.notifyPopup('disconnected', {
-            code: event.code,
-            reason: event.reason,
-        });
-
-        // 1000 = normal close (user disconnect); do not auto-reconnect
-        if (event.code === 1000) {
-            return;
-        }
-
-        // Never reached onopen (e.g. backend down): do not auto-reconnect loop
-        if (!wasConnected) {
-            return;
-        }
-
-        const url = this.lastWsUrl;
-        if (!url || this.reconnectAttempts >= this.maxReconnectAttempts) {
-            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-                console.log('Max reconnection attempts reached');
-                this.clearPersistedState();
-            }
-            return;
-        }
-
-        this.reconnectAttempts++;
-        console.log(
-            `Reconnecting in ${this.reconnectDelay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
-        );
-
-        setTimeout(() => {
-            this.connect(url).catch((err) =>
-                console.error('Reconnect failed:', err)
-            );
-        }, this.reconnectDelay);
-
-        this.reconnectDelay *= 2;
+        return this.wsConnectionManager.onWebSocketClose(event);
     }
     
     onWebSocketError(error) {
-        console.error('WebSocket error:', error);
-        this.handleConnectionError(error);
+        return this.wsConnectionManager.onWebSocketError(error);
     }
     
     handleConnectionError(error) {
-        this.connected = false;
-        this.stopHeartbeat();
-        this.recordError(error?.message || 'Connection error');
-        this.notifyPopup('error', { error: error.message });
+        return this.wsConnectionManager.handleConnectionError(error);
     }
     
     disconnect() {
-        this.lastWsUrl = null;
-        this.stopHeartbeat();
-        if (this.ws) {
-            this.ws.close(1000, 'User disconnected');
-            this.ws = null;
-        }
-
-        this.connected = false;
-        this.clientId = null;
-        this.reconnectAttempts = 0;
-        this.reconnectDelay = 1000;
-        this.lastError = null;
-
-        this.clearPersistedState();
-        this.savePersistedState();
-        this.notifyPopup('disconnected');
+        return this.wsConnectionManager.disconnect();
     }
     
     notifyPopup(event, data = {}) {

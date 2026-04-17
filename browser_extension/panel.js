@@ -31,6 +31,12 @@ class GrokConnectionPanel {
         this.discountSelectorElement = document.getElementById('discountSelector');
         this.discountUrlElement = document.getElementById('discountUrl');
 
+        this.cashbackStoreInput = document.getElementById('cashbackStoreInput');
+        this.queryCashbackBtn = document.getElementById('queryCashbackBtn');
+        this.cashbackXPathElement = document.getElementById('cashbackXPath');
+        this.cashbackUrlElement = document.getElementById('cashbackUrl');
+        this.cashbackTextElement = document.getElementById('cashbackText');
+
         this.statusElement = document.getElementById('status');
         this.wsStatusElement = document.getElementById('wsStatus');
         this.grokTabStatusElement = document.getElementById('grokTabStatus');
@@ -46,7 +52,7 @@ class GrokConnectionPanel {
 
     loadSettings() {
         chrome.storage.local.get(
-            ['wsUrl', 'grokUrl', 'autoOpen', 'messageCount', 'competitorInput'],
+            ['wsUrl', 'grokUrl', 'autoOpen', 'messageCount', 'competitorInput', 'cashbackStoreInput'],
             (result) => {
                 if (result.wsUrl) {
                     this.wsUrlInput.value = result.wsUrl;
@@ -56,6 +62,9 @@ class GrokConnectionPanel {
                 }
                 if (result.competitorInput && this.competitorInput) {
                     this.competitorInput.value = result.competitorInput;
+                }
+                if (result.cashbackStoreInput && this.cashbackStoreInput) {
+                    this.cashbackStoreInput.value = result.cashbackStoreInput;
                 }
                 if (result.autoOpen !== undefined) {
                     this.autoOpenCheckbox.checked = result.autoOpen;
@@ -75,6 +84,7 @@ class GrokConnectionPanel {
             autoOpen: this.autoOpenCheckbox.checked,
             messageCount: this.messageCount,
             competitorInput: this.competitorInput?.value?.trim() || '',
+            cashbackStoreInput: this.cashbackStoreInput?.value?.trim() || '',
         });
     }
 
@@ -83,6 +93,7 @@ class GrokConnectionPanel {
         this.disconnectBtn.addEventListener('click', () => this.disconnectFromBackend());
         this.openGrokBtn.addEventListener('click', () => this.openGrokTab());
         this.queryDiscountBtn?.addEventListener('click', () => this.querySimplyCodesDiscount());
+        this.queryCashbackBtn?.addEventListener('click', () => this.queryCashbackMonitorDiv9());
         this.refreshBtn.addEventListener('click', () => this.refreshStatus());
         this.clearStatsBtn.addEventListener('click', () => this.clearStats());
 
@@ -90,10 +101,17 @@ class GrokConnectionPanel {
         this.grokUrlInput.addEventListener('change', () => this.saveSettings());
         this.autoOpenCheckbox.addEventListener('change', () => this.saveSettings());
         this.competitorInput?.addEventListener('change', () => this.saveSettings());
+        this.cashbackStoreInput?.addEventListener('change', () => this.saveSettings());
         this.competitorInput?.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 event.preventDefault();
                 this.querySimplyCodesDiscount();
+            }
+        });
+        this.cashbackStoreInput?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                this.queryCashbackMonitorDiv9();
             }
         });
 
@@ -220,6 +238,74 @@ class GrokConnectionPanel {
         } finally {
             this.queryDiscountBtn.disabled = false;
             this.queryDiscountBtn.textContent = '查询折扣额度';
+        }
+    }
+
+    async queryCashbackMonitorDiv9() {
+        const store = this.cashbackStoreInput?.value?.trim() || '';
+        if (!store) {
+            this.showConnectionError('请输入店铺名或链接');
+            return;
+        }
+
+        this.saveSettings();
+        if (this.queryCashbackBtn) {
+            this.queryCashbackBtn.disabled = true;
+            this.queryCashbackBtn.textContent = '抓取中…';
+        }
+        this.resetCashbackResult('抓取中…');
+
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: 'queryCashbackMonitorDiv9',
+                store,
+            });
+
+            if (!response?.success) {
+                throw new Error(response?.error || '抓取失败');
+            }
+            this.applyCashbackResult(response.data);
+            this.showConnectionSuccess(`已抓取 ${store} 的 div[9] 内容`);
+        } catch (error) {
+            this.resetCashbackResult('抓取失败');
+            this.updateLastError(error.message);
+            this.showConnectionError(`抓取失败：${error.message}`);
+        } finally {
+            if (this.queryCashbackBtn) {
+                this.queryCashbackBtn.disabled = false;
+                this.queryCashbackBtn.textContent = '抓取 div[9]';
+            }
+        }
+    }
+
+    applyCashbackResult(data = {}) {
+        const urlText = data.pageUrl || '-';
+        const xpathText = data.xpath || '/html/body/div[9]';
+        const text = (data.text || '').trim();
+        const textValue = text || '（空）';
+
+        if (this.cashbackUrlElement) {
+            this.cashbackUrlElement.textContent = urlText;
+        }
+        if (this.cashbackXPathElement) {
+            this.cashbackXPathElement.textContent = xpathText;
+        }
+        if (this.cashbackTextElement) {
+            this.cashbackTextElement.textContent = textValue;
+            this.cashbackTextElement.style.color = text ? '#10a37f' : '#666';
+        }
+    }
+
+    resetCashbackResult(value = '未查询') {
+        if (this.cashbackUrlElement) {
+            this.cashbackUrlElement.textContent = '-';
+        }
+        if (this.cashbackXPathElement) {
+            this.cashbackXPathElement.textContent = '/html/body/div[9]';
+        }
+        if (this.cashbackTextElement) {
+            this.cashbackTextElement.textContent = value;
+            this.cashbackTextElement.style.color = '#666';
         }
     }
 
